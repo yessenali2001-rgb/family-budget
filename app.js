@@ -46,7 +46,8 @@ function normalizeReport(r) {
 }
 
 function isValidTx(t) {
-  return t && typeof t.id === 'string' && (t.type === 'income' || t.type === 'expense')
+  return t && typeof t.id === 'string' && ['income', 'expense', 'transfer'].includes(t.type)
+    && (t.type !== 'transfer' || typeof t.to === 'string')
     && typeof t.amount === 'number' && t.amount > 0 && /^\d{4}-\d{2}-\d{2}$/.test(t.date)
     && typeof t.category === 'string' && typeof t.member === 'string';
 }
@@ -346,6 +347,9 @@ function fillSelect(select, options, value) {
 
 // ---------- Rendering ----------
 
+// Перевод между членами семьи касается и отправителя, и получателя.
+const involves = (t, m) => t.member === m || (t.type === 'transfer' && t.to === m);
+
 function render({ settings = true } = {}) {
   const [y, m] = currentMonth.split('-').map(Number);
   $('monthLabel').textContent = new Date(y, m - 1, 1).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
@@ -354,11 +358,19 @@ function render({ settings = true } = {}) {
   if (sheet !== 'all' && !state.members.includes(sheet) && (!db || settingsLoaded)) sheet = 'all';
   const onMemberSheet = sheet !== 'all';
   const monthTx = state.transactions.filter(
-    (t) => t.date.startsWith(currentMonth) && (!onMemberSheet || t.member === sheet)
+    (t) => t.date.startsWith(currentMonth) && (!onMemberSheet || involves(t, sheet))
   );
+  // Переводы внутри семьи не доходы и не расходы: для семьи они в сумме дают ноль,
+  // а у отдельного человека меняют только остаток на руках.
   const income = monthTx.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0);
   const expense = monthTx.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
-  const balance = income - expense;
+  const transfers = monthTx.filter((t) => t.type === 'transfer');
+  const received = onMemberSheet ? transfers.filter((t) => t.to === sheet).reduce((s, t) => s + t.amount, 0) : 0;
+  const sent = onMemberSheet ? transfers.filter((t) => t.member === sheet).reduce((s, t) => s + t.amount, 0) : 0;
+  const balance = income - expense + received - sent;
+  const transferParts = [received && `получено ${fmt(received)}`, sent && `отдано ${fmt(sent)}`].filter(Boolean);
+  $('transferNote').hidden = !transferParts.length;
+  $('transferNote').textContent = 'с учётом переводов: ' + transferParts.join(', ');
 
   $('totalIncome').textContent = fmt(income);
   $('totalExpense').textContent = fmt(expense);
@@ -372,7 +384,6 @@ function render({ settings = true } = {}) {
   renderReminder();
   if (!onMemberSheet) renderBudget(expense);
   $('filterMember').hidden = onMemberSheet;
-  $('member').hidden = onMemberSheet;
 
   renderTabs();
   renderFormSelects();
@@ -730,6 +741,10 @@ function renderAi() {
   else $('aiMeta').textContent = hasData ? 'Claude разберёт месяц и даст советы. Анализ увидит вся семья.' : 'Добавьте операции, чтобы сделать анализ.';
 }
 
+const transfersOf = (month) => state.transactions
+  .filter((t) => t.type === 'transfer' && t.date.startsWith(month))
+  .map((t) => `- ${t.date}, ${t.member} → ${t.to}, ${t.amount}${t.note ? `, «${t.note}»` : ''}`);
+
 function buildPrompt(month) {
   const cur = monthStats(month);
   const prev = monthStats(shiftMonth(month, -1));
@@ -754,6 +769,8 @@ function buildPrompt(month) {
     '', 'Доходы по категориям:', ...(incomeByCat.length ? incomeByCat : ['- нет']),
     '', 'Расходы по членам семьи:', ...(members.length ? members : ['- нет']),
     '', 'Самые крупные траты:', ...(top.length ? top : ['- нет']),
+    '', 'Переводы денег между членами семьи (это не доходы и не расходы семьи):',
+    ...(transfersOf(month).length ? transfersOf(month) : ['- нет']),
     '',
     'Напиши итог месяца на русском языке, просто и дружелюбно, для всей семьи. Без markdown: без звёздочек, решёток и таблиц.',
     'Структура (заголовки как обычный текст на отдельной строке):',
@@ -820,9 +837,21 @@ function renderTabs() {
 
 function renderFormSelects() {
   const type = document.querySelector('input[name="type"]:checked').value;
+  const isTransfer = type === 'transfer';
   const cats = type === 'income' ? state.incomeCategories : state.expenseCategories;
   fillSelect($('category'), cats.map((c) => [c, c]), $('category').value);
-  fillSelect($('member'), state.members.map((m) => [m, m]), sheet !== 'all' ? sheet : $('member').value);
+  $('category').hidden = isTransfer;
+  $('category').required = !isTransfer;
+
+  // На личном листе человек известен; для перевода нужно выбрать, кто и кому.
+  const who = isTransfer ? 'От кого: ' : '';
+  fillSelect($('member'), state.members.map((m) => [m, who + m]),
+    sheet !== 'all' && document.activeElement !== $('member') ? sheet : $('member').value);
+  $('member').hidden = sheet !== 'all' && !isTransfer;
+  const others = state.members.filter((m) => m !== $('member').value);
+  fillSelect($('toMember'), others.map((m) => [m, 'Кому: ' + m]), $('toMember').value);
+  $('toMember').hidden = !isTransfer;
+  $('toMember').required = isTransfer;
   fillSelect(
     $('filterMember'),
     [['all', 'Все члены семьи'], ...state.members.map((m) => [m, m])],
@@ -879,12 +908,22 @@ function renderTxList(monthTx) {
   const type = $('filterType').value;
   const member = $('filterMember').value;
   const list = monthTx
-    .filter((t) => (type === 'all' || t.type === type) && (member === 'all' || t.member === member))
+    .filter((t) => (type === 'all' || t.type === type) && (member === 'all' || involves(t, member)))
     .sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
 
   $('txList').replaceChildren(...list.map((t) => {
     const date = new Date(t.date + 'T00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
-    const meta = [date, t.member, t.note].filter(Boolean).join(' · ');
+    const isTransfer = t.type === 'transfer';
+    const meta = [date, isTransfer ? '' : t.member, t.note].filter(Boolean).join(' · ');
+    // Перевод на листе человека — плюс или минус для него, на общем листе — нейтральный.
+    let sign = t.type === 'income' ? '+' : '−';
+    let cls = t.type;
+    if (isTransfer) {
+      const side = sheet !== 'all' ? sheet : $('filterMember').value;
+      if (side === t.to) [sign, cls] = ['+', 'income'];
+      else if (side === t.member) [sign, cls] = ['−', 'expense'];
+      else [sign, cls] = ['', 'transfer'];
+    }
     const del = el('button', { className: 'del-btn', textContent: '✕', title: 'Удалить' });
     del.addEventListener('click', async () => {
       if (!(await ask('Удалить эту операцию?'))) return;
@@ -893,12 +932,9 @@ function renderTxList(monthTx) {
     });
     return el('li', {},
       el('div', { className: 'tx-main' },
-        el('div', { className: 'tx-title', textContent: t.category }),
+        el('div', { className: 'tx-title', textContent: isTransfer ? `Перевод: ${t.member} → ${t.to}` : t.category }),
         el('div', { className: 'tx-meta', textContent: meta })),
-      el('span', {
-        className: 'tx-amount ' + t.type,
-        textContent: (t.type === 'income' ? '+' : '−') + fmt(t.amount),
-      }),
+      el('span', { className: 'tx-amount ' + cls, textContent: sign + fmt(t.amount) }),
       del
     );
   }));
@@ -942,6 +978,7 @@ $('prevMonth').addEventListener('click', () => { currentMonth = shiftMonth(curre
 $('nextMonth').addEventListener('click', () => { currentMonth = shiftMonth(currentMonth, 1); render(); });
 
 document.querySelectorAll('input[name="type"]').forEach((r) => r.addEventListener('change', renderFormSelects));
+$('member').addEventListener('change', renderFormSelects);
 $('filterType').addEventListener('change', render);
 
 $('budgetInput').addEventListener('input', () => {
@@ -955,15 +992,20 @@ $('txForm').addEventListener('submit', (e) => {
   e.preventDefault();
   const amount = parseFloat($('amount').value);
   if (!(amount > 0)) return;
+  const type = document.querySelector('input[name="type"]:checked').value;
   const tx = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-    type: document.querySelector('input[name="type"]:checked').value,
+    type,
     amount: Math.round(amount * 100) / 100,
-    category: $('category').value,
+    category: type === 'transfer' ? 'Перевод' : $('category').value,
     member: $('member').value,
     date: $('date').value,
     note: $('note').value.trim(),
   };
+  if (type === 'transfer') {
+    tx.to = $('toMember').value;
+    if (!tx.to || tx.to === tx.member) return notify('Выберите, кому переводите деньги.');
+  }
   addTx(tx);
   currentMonth = tx.date.slice(0, 7);
   $('amount').value = '';

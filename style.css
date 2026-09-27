@@ -132,6 +132,8 @@ main { max-width: 1000px; margin: 0 auto; padding: 16px; display: grid; gap: 16p
 .card-label { color: var(--muted); font-size: .9rem; }
 .card-value { font-size: 1.6rem; font-weight: 700; margin-top: 4px; }
 .income { color: var(--income); }
+.transfer { color: var(--muted); }
+.card-note { color: var(--muted); font-size: .8rem; margin-top: 4px; }
 .expense { color: var(--expense); }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }

@@ -42,7 +42,7 @@
     <section class="cards">
       <div class="card"><div class="card-label">Доходы</div><div id="totalIncome" class="card-value income">0</div></div>
       <div class="card"><div class="card-label">Расходы</div><div id="totalExpense" class="card-value expense">0</div></div>
-      <div class="card"><div class="card-label">Баланс за месяц</div><div id="balance" class="card-value">0</div></div>
+      <div class="card"><div class="card-label">Баланс за месяц</div><div id="balance" class="card-value">0</div><div id="transferNote" class="card-note" hidden></div></div>
     </section>
 
     <section id="budgetPanel" class="panel">
@@ -59,10 +59,12 @@
         <div class="type-toggle">
           <label><input type="radio" name="type" value="expense" checked> Расход</label>
           <label><input type="radio" name="type" value="income"> Доход</label>
+          <label><input type="radio" name="type" value="transfer"> Перевод</label>
         </div>
         <input id="amount" type="number" min="0.01" step="0.01" placeholder="Сумма" required>
         <select id="category" required></select>
-        <select id="member" required></select>
+        <select id="member" required aria-label="Кто"></select>
+        <select id="toMember" aria-label="Кому" hidden></select>
         <input id="date" type="date" required>
         <input id="note" type="text" placeholder="Комментарий (необязательно)" maxlength="100">
         <button type="submit" class="primary">Добавить</button>
@@ -123,6 +125,7 @@
             <option value="all">Все</option>
             <option value="expense">Расходы</option>
             <option value="income">Доходы</option>
+            <option value="transfer">Переводы</option>
           </select>
           <select id="filterMember"></select>
         </div>
