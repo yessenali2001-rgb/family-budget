@@ -1,20 +1,13 @@
 rules_version = '2';
 
-// Доступ к бюджету есть только у членов семьи из списка ниже.
+// Доступ к бюджету есть только у общего аккаунта семьи (его пароль — PIN-код).
+// Email должен совпадать с FAMILY_EMAIL в firebase-config.js.
 // Вставьте эти правила в Firebase Console → Firestore Database → Rules и нажмите Publish.
 service cloud.firestore {
   match /databases/{database}/documents {
-    function isFamily() {
-      return request.auth != null
-        && request.auth.token.email_verified == true
-        && request.auth.token.email in [
-          'your.email@gmail.com',
-          'family.member@gmail.com'
-        ];
-    }
-
     match /{document=**} {
-      allow read, write: if isFamily();
+      allow read, write: if request.auth != null
+        && request.auth.token.email == 'family@family-budget.app';
     }
   }
 }

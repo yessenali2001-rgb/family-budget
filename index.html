@@ -22,7 +22,11 @@
   <main>
     <section id="authPanel" class="panel banner" hidden>
       <p id="authText"></p>
-      <button id="signInBtn" class="primary">Войти через Google</button>
+      <form id="pinForm" class="pin-form" hidden>
+        <input id="pinInput" type="password" inputmode="numeric" autocomplete="current-password"
+          minlength="6" maxlength="20" placeholder="PIN-код" aria-label="PIN-код" required>
+        <button type="submit" class="primary">Войти</button>
+      </form>
       <button id="signOutBtn" hidden>Выйти</button>
     </section>
 

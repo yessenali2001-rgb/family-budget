@@ -24,13 +24,15 @@
 
 ## Общий бюджет через Firebase (для сайта на GitHub Pages)
 
-Сайт на GitHub Pages может хранить данные в общей базе Firebase. Тогда вся семья видит одни и те же записи, а вход — через Google.
+Сайт на GitHub Pages может хранить данные в общей базе Firebase. Тогда вся семья видит одни и те же записи, а вход — по семейному PIN-коду (на каждом устройстве вводится один раз).
+
+У семьи один общий аккаунт Firebase, его пароль — это PIN. PIN проверяет Firebase и временно блокирует вход после нескольких неверных попыток, а правила Firestore пускают к данным только этот аккаунт.
 
 1. Создайте проект на https://console.firebase.google.com (Google Analytics не нужен).
-2. **Build → Firestore Database → Create database** → режим **production**, регион, например, `europe-west`.
-3. **Build → Authentication → Get started → Sign-in method → Google → Enable**.
-4. **Authentication → Settings → Authorized domains → Add domain** → `yessenali2001-rgb.github.io`.
-5. **Firestore Database → Rules**: вставьте содержимое `firestore.rules`, впишите email всех членов семьи и нажмите **Publish**.
+2. **Build → Firestore Database → Create database** → режим **production**, любой регион.
+3. **Build → Authentication → Get started → Sign-in method → Email/Password → Enable** (второй переключатель, «Email link», не нужен).
+4. **Authentication → Users → Add user**: email `family@family-budget.app` (как в `firebase-config.js`), пароль — ваш PIN из 6+ цифр. Не берите простые PIN вроде `123456` или дату рождения.
+5. **Firestore Database → Rules**: вставьте содержимое `firestore.rules` и нажмите **Publish**.
 6. **Project settings → Your apps → Web (`</>`)** → зарегистрируйте приложение и скопируйте объект `firebaseConfig` в `firebase-config.js` вместо `null`.
 
-Ключи из `firebaseConfig` не секретные: доступ к данным защищают правила из шага 5, а не они.
+Ключи из `firebaseConfig` не секретные: данные защищают PIN и правила из шага 5. Сменить PIN: **Authentication → Users → ⋮ → Reset password** недоступен для выдуманного адреса, поэтому удалите пользователя и создайте заново с новым паролем (данные останутся).

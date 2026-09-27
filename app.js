@@ -228,7 +228,7 @@ function onSubscribeError(e) {
 
 // Общая база: Firebase (сайт на GitHub Pages) или хранилище claude.ai (артефакт).
 async function connectShared() {
-  if (window.FIREBASE_CONFIG) return connectFirebase();
+  if (window.FIREBASE_CONFIG && window.FAMILY_EMAIL) return connectFirebase();
   if (!window.claude?.use) return;
   const shared = await window.claude.use('db');
   if (!shared) return;
@@ -423,8 +423,9 @@ function renderBudget(spent) {
 }
 
 // ---------- Firebase ----------
-// Настройки проекта лежат в firebase-config.js. Вход через Google; кого пускать,
-// решают правила Firestore (firestore.rules), а не страница.
+// Настройки проекта лежат в firebase-config.js. У семьи один общий аккаунт Firebase,
+// его пароль — PIN-код. PIN проверяет Firebase (и блокирует перебор), а доступ
+// к данным дают правила Firestore (firestore.rules) только этому аккаунту.
 
 const FIREBASE_SDK = 'https://www.gstatic.com/firebasejs/11.10.0/';
 
@@ -458,16 +459,25 @@ let firebaseAuth = null;
 function showAuth(text, { signIn = false, signOut = false } = {}) {
   $('authPanel').hidden = false;
   $('authText').textContent = text;
-  $('signInBtn').hidden = !signIn;
+  $('pinForm').hidden = !signIn;
   $('signOutBtn').hidden = !signOut;
+  if (signIn) $('pinInput').focus();
 }
 
 function showNoAccess() {
-  const email = firebaseAuth?.currentUser?.email || 'этого аккаунта';
   document.body.classList.add('needs-login');
   setStatus('Нет доступа', 'bad');
-  showAuth(`У ${email} нет доступа к семейному бюджету. Попросите владельца добавить этот email в список семьи или войдите другим аккаунтом.`, { signOut: true });
+  showAuth('Нет доступа к семейному бюджету. Проверьте правила Firestore (firestore.rules) или войдите заново.', { signOut: true });
 }
+
+const PIN_ERRORS = {
+  'auth/invalid-credential': 'Неверный PIN-код.',
+  'auth/wrong-password': 'Неверный PIN-код.',
+  'auth/invalid-login-credentials': 'Неверный PIN-код.',
+  'auth/user-not-found': 'Семейный аккаунт не найден. Проверьте настройки Firebase.',
+  'auth/too-many-requests': 'Слишком много попыток. Подождите несколько минут и попробуйте снова.',
+  'auth/network-request-failed': 'Нет интернета. Проверьте подключение.',
+};
 
 async function connectFirebase() {
   let firebase;
@@ -482,17 +492,19 @@ async function connectFirebase() {
   const { app, auth, fs } = firebase;
   const fbApp = app.initializeApp(window.FIREBASE_CONFIG);
   firebaseAuth = auth.getAuth(fbApp);
-  const provider = new auth.GoogleAuthProvider();
 
-  $('signInBtn').onclick = async () => {
+  $('pinForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const button = $('pinForm').querySelector('button');
+    button.disabled = true;
     try {
-      await auth.signInWithPopup(firebaseAuth, provider);
-    } catch (e) {
-      if (['auth/popup-blocked', 'auth/operation-not-supported-in-this-environment'].includes(e?.code)) {
-        auth.signInWithRedirect(firebaseAuth, provider);
-      } else if (!['auth/popup-closed-by-user', 'auth/cancelled-popup-request'].includes(e?.code)) {
-        notify('Не удалось войти. Попробуйте ещё раз.');
-      }
+      await auth.signInWithEmailAndPassword(firebaseAuth, window.FAMILY_EMAIL, $('pinInput').value.trim());
+      $('pinInput').value = '';
+    } catch (err) {
+      $('pinInput').select();
+      notify(PIN_ERRORS[err?.code] || 'Не удалось войти. Попробуйте ещё раз.');
+    } finally {
+      button.disabled = false;
     }
   };
   $('signOutBtn').onclick = $('logoutBtn').onclick = () => auth.signOut(firebaseAuth).then(() => location.reload());
@@ -501,13 +513,12 @@ async function connectFirebase() {
   auth.onAuthStateChanged(firebaseAuth, (user) => {
     if (!user) {
       setStatus('');
-      showAuth('Войдите через Google, чтобы открыть общий бюджет семьи.', { signIn: true });
+      showAuth('Введите семейный PIN-код. На этом устройстве его нужно ввести только один раз.', { signIn: true });
       return;
     }
     document.body.classList.remove('needs-login');
     $('authPanel').hidden = true;
     $('logoutBtn').hidden = false;
-    $('logoutBtn').textContent = `Выйти (${user.email})`;
     if (!db) attachShared(firestoreAdapter(fs, fs.getFirestore(fbApp)));
   });
 }
