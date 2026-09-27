@@ -22,17 +22,16 @@
 
 Валюта задаётся константой `CURRENCY` в начале `app.js`.
 
-## Общий бюджет через Firebase (для сайта на GitHub Pages)
+## Общий бюджет через Supabase (для сайта на GitHub Pages)
 
-Сайт на GitHub Pages может хранить данные в общей базе Firebase. Тогда вся семья видит одни и те же записи, а вход — по семейному PIN-коду (на каждом устройстве вводится один раз).
+Сайт на GitHub Pages может хранить данные в бесплатной базе Supabase. Тогда вся семья видит одни и те же записи, а вход — по семейному PIN-коду (на каждом устройстве вводится один раз).
 
-У семьи один общий аккаунт Firebase, его пароль — это PIN. PIN проверяет Firebase и временно блокирует вход после нескольких неверных попыток, а правила Firestore пускают к данным только этот аккаунт.
+У семьи один общий аккаунт Supabase, его пароль — это PIN. PIN проверяет Supabase и ограничивает число попыток, а правила таблицы пускают к данным только этот аккаунт.
 
-1. Создайте проект на https://console.firebase.google.com (Google Analytics не нужен).
-2. **Build → Firestore Database → Create database** → режим **production**, любой регион.
-3. **Build → Authentication → Get started → Sign-in method → Email/Password → Enable** (второй переключатель, «Email link», не нужен).
-4. **Authentication → Users → Add user**: email `family@family-budget.app` (как в `firebase-config.js`), пароль — ваш PIN из 6+ цифр. Не берите простые PIN вроде `123456` или дату рождения.
-5. **Firestore Database → Rules**: вставьте содержимое `firestore.rules` и нажмите **Publish**.
-6. **Project settings → Your apps → Web (`</>`)** → зарегистрируйте приложение и скопируйте объект `firebaseConfig` в `firebase-config.js` вместо `null`.
+1. Зайдите на https://supabase.com → **Start your project** → **Continue with GitHub**.
+2. **New project**: название `family-budget`, придумайте пароль базы (он не понадобится), регион поближе (например, Frankfurt) → **Create new project**. Подождите 1–2 минуты.
+3. **SQL Editor** → вставьте весь файл `supabase.sql` → **Run**.
+4. **Authentication → Users → Add user → Create new user**: email `family@family-budget.app` (как в `config.js`), пароль — ваш PIN из 8+ цифр, галочка **Auto Confirm User** → **Create user**.
+5. **Project Settings → API Keys**: скопируйте **Project URL** и **publishable** (или **anon public**) ключ в `config.js`.
 
-Ключи из `firebaseConfig` не секретные: данные защищают PIN и правила из шага 5. Сменить PIN: **Authentication → Users → ⋮ → Reset password** недоступен для выдуманного адреса, поэтому удалите пользователя и создайте заново с новым паролем (данные останутся).
+Ключи из `config.js` не секретные: данные защищают PIN и правила из `supabase.sql`. Бесплатный проект Supabase засыпает после недели без посещений; данные при этом сохраняются, проект будится кнопкой **Restore** в панели Supabase.

@@ -226,9 +226,9 @@ function onSubscribeError(e) {
   setStatus('Нет связи с общим бюджетом', 'bad');
 }
 
-// Общая база: Firebase (сайт на GitHub Pages) или хранилище claude.ai (артефакт).
+// Общая база: Supabase (сайт на GitHub Pages) или хранилище claude.ai (артефакт).
 async function connectShared() {
-  if (window.FIREBASE_CONFIG && window.FAMILY_EMAIL) return connectFirebase();
+  if (window.SUPABASE_CONFIG?.url && window.FAMILY_EMAIL) return connectSupabase();
   if (!window.claude?.use) return;
   const shared = await window.claude.use('db');
   if (!shared) return;
@@ -422,39 +422,105 @@ function renderBudget(spent) {
   );
 }
 
-// ---------- Firebase ----------
-// Настройки проекта лежат в firebase-config.js. У семьи один общий аккаунт Firebase,
-// его пароль — PIN-код. PIN проверяет Firebase (и блокирует перебор), а доступ
-// к данным дают правила Firestore (firestore.rules) только этому аккаунту.
+// ---------- Supabase ----------
+// Настройки проекта лежат в config.js. У семьи один общий аккаунт Supabase, его пароль —
+// PIN-код. PIN проверяет Supabase (и ограничивает число попыток), а к таблице пускает
+// только этот аккаунт (правила в supabase.sql).
+// Все документы лежат в одной таблице budget_docs: path ('months/2026-09') → data (jsonb).
 
-const FIREBASE_SDK = 'https://www.gstatic.com/firebasejs/11.10.0/';
+const SUPABASE_SDK = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm';
+const TABLE = 'budget_docs';
 
-// Переходник: Firestore с тем же набором вызовов, что и у общей базы claude.ai.
-function firestoreAdapter(fs, store) {
-  const wrap = (snap) => ({ id: snap.id, exists: snap.exists(), data: () => snap.data(), metadata: snap.metadata });
+function deepMerge(a, b) {
+  if (!a || typeof a !== 'object' || Array.isArray(a) || !b || typeof b !== 'object' || Array.isArray(b)) return b;
+  const out = { ...a };
+  for (const [k, v] of Object.entries(b)) out[k] = deepMerge(a[k], v);
+  return out;
+}
+
+// Переходник: таблица Supabase с тем же набором вызовов, что и у общей базы claude.ai.
+function supabaseAdapter(client) {
+  const docs = new Map();
+  const listeners = new Set();
+  const errorHandlers = new Set();
+  let loaded = false;
+  const emit = () => { if (loaded) listeners.forEach((f) => f()); };
+  const snap = (path) => ({
+    id: path.split('/').pop(), exists: docs.has(path), data: () => docs.get(path),
+    metadata: { fromCache: false, hasPendingWrites: false },
+  });
+  const failure = (error) => ({ code: error.code === '42501' ? 'permission-denied' : 'unavailable', message: error.message });
+
+  async function load() {
+    const { data, error } = await client.from(TABLE).select('path, data');
+    if (error) return errorHandlers.forEach((h) => h(failure(error)));
+    docs.clear();
+    for (const row of data) docs.set(row.path, row.data);
+    loaded = true;
+    emit();
+  }
+
+  // Ответ сервера об ошибке: перечитываем таблицу, чтобы убрать неудавшуюся правку с экрана.
+  async function check(request) {
+    const { error } = await request;
+    if (error) {
+      load();
+      throw failure(error);
+    }
+  }
+
+  client.channel('budget')
+    .on('postgres_changes', { event: '*', schema: 'public', table: TABLE }, (change) => {
+      if (change.eventType === 'DELETE') docs.delete(change.old.path);
+      else docs.set(change.new.path, change.new.data);
+      emit();
+    })
+    .subscribe((status) => { if (status === 'SUBSCRIBED') load(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+  load();
+
+  const subscribe = (f, error) => {
+    listeners.add(f);
+    if (error) errorHandlers.add(error);
+    if (loaded) f();
+    return () => { listeners.delete(f); errorHandlers.delete(error); };
+  };
+
   return {
     doc(path) {
-      const ref = fs.doc(store, path);
       return {
-        set: (data) => fs.setDoc(ref, data),
-        // merge: вложенные объекты сливаются, как update в claude.ai, и документ создаётся при отсутствии
-        update: (data) => fs.setDoc(ref, data, { merge: true }),
-        delete: () => fs.deleteDoc(ref),
-        onSnapshot: (next, error) => fs.onSnapshot(ref, (snap) => next(wrap(snap)), error),
+        set(data) {
+          docs.set(path, data);
+          emit();
+          return check(client.from(TABLE).upsert({ path, data }));
+        },
+        // Слияние делает сервер (merge_doc), чтобы одновременные правки не затирали друг друга.
+        update(data) {
+          docs.set(path, deepMerge(docs.get(path) || {}, data));
+          emit();
+          return check(client.rpc('merge_doc', { p_path: path, p_patch: data }));
+        },
+        delete() {
+          docs.delete(path);
+          emit();
+          return check(client.from(TABLE).delete().eq('path', path));
+        },
+        onSnapshot: (next, error) => subscribe(() => next(snap(path)), error),
       };
     },
-    collection(path) {
-      const ref = fs.collection(store, path);
+    collection(prefix) {
       return {
-        onSnapshot: (next, error) => fs.onSnapshot(ref, (qs) => next({
-          docs: qs.docs.map(wrap), size: qs.size, empty: qs.empty, metadata: qs.metadata,
-        }), error),
+        onSnapshot: (next, error) => subscribe(() => {
+          const list = [...docs.keys()]
+            .filter((k) => k.startsWith(prefix + '/') && !k.slice(prefix.length + 1).includes('/'))
+            .sort()
+            .map(snap);
+          next({ docs: list, size: list.length, empty: !list.length, metadata: { fromCache: false, hasPendingWrites: false } });
+        }, error),
       };
     },
   };
 }
-
-let firebaseAuth = null;
 
 function showAuth(text, { signIn = false, signOut = false } = {}) {
   $('authPanel').hidden = false;
@@ -467,59 +533,62 @@ function showAuth(text, { signIn = false, signOut = false } = {}) {
 function showNoAccess() {
   document.body.classList.add('needs-login');
   setStatus('Нет доступа', 'bad');
-  showAuth('Нет доступа к семейному бюджету. Проверьте правила Firestore (firestore.rules) или войдите заново.', { signOut: true });
+  showAuth('Нет доступа к семейному бюджету. Выйдите и введите PIN-код заново.', { signOut: true });
 }
 
-const PIN_ERRORS = {
-  'auth/invalid-credential': 'Неверный PIN-код.',
-  'auth/wrong-password': 'Неверный PIN-код.',
-  'auth/invalid-login-credentials': 'Неверный PIN-код.',
-  'auth/user-not-found': 'Семейный аккаунт не найден. Проверьте настройки Firebase.',
-  'auth/too-many-requests': 'Слишком много попыток. Подождите несколько минут и попробуйте снова.',
-  'auth/network-request-failed': 'Нет интернета. Проверьте подключение.',
-};
+function pinError(error) {
+  if (error?.status === 429 || error?.code === 'over_request_rate_limit') {
+    return 'Слишком много попыток. Подождите несколько минут и попробуйте снова.';
+  }
+  if (error?.code === 'invalid_credentials' || error?.status === 400) return 'Неверный PIN-код.';
+  return 'Не удалось войти. Проверьте интернет и попробуйте ещё раз.';
+}
 
-async function connectFirebase() {
-  let firebase;
+async function connectSupabase() {
+  let createClient;
   try {
-    const [app, auth, fs] = await Promise.all(['firebase-app.js', 'firebase-auth.js', 'firebase-firestore.js']
-      .map((f) => import(FIREBASE_SDK + f)));
-    firebase = { app, auth, fs };
+    ({ createClient } = await import(SUPABASE_SDK));
   } catch {
     setStatus('Общая база недоступна, данные сохраняются только здесь', 'bad');
     return;
   }
-  const { app, auth, fs } = firebase;
-  const fbApp = app.initializeApp(window.FIREBASE_CONFIG);
-  firebaseAuth = auth.getAuth(fbApp);
+  const { url, key } = window.SUPABASE_CONFIG;
+  const client = createClient(url, key);
 
   $('pinForm').onsubmit = async (e) => {
     e.preventDefault();
     const button = $('pinForm').querySelector('button');
     button.disabled = true;
     try {
-      await auth.signInWithEmailAndPassword(firebaseAuth, window.FAMILY_EMAIL, $('pinInput').value.trim());
-      $('pinInput').value = '';
+      const { error } = await client.auth.signInWithPassword({ email: window.FAMILY_EMAIL, password: $('pinInput').value.trim() });
+      if (error) {
+        $('pinInput').select();
+        notify(pinError(error));
+      } else {
+        $('pinInput').value = '';
+      }
     } catch (err) {
-      $('pinInput').select();
-      notify(PIN_ERRORS[err?.code] || 'Не удалось войти. Попробуйте ещё раз.');
+      notify(pinError(err));
     } finally {
       button.disabled = false;
     }
   };
-  $('signOutBtn').onclick = $('logoutBtn').onclick = () => auth.signOut(firebaseAuth).then(() => location.reload());
+  $('signOutBtn').onclick = $('logoutBtn').onclick = () => client.auth.signOut().then(() => location.reload());
 
   document.body.classList.add('needs-login');
-  auth.onAuthStateChanged(firebaseAuth, (user) => {
-    if (!user) {
-      setStatus('');
-      showAuth('Введите семейный PIN-код. На этом устройстве его нужно ввести только один раз.', { signIn: true });
-      return;
-    }
-    document.body.classList.remove('needs-login');
-    $('authPanel').hidden = true;
-    $('logoutBtn').hidden = false;
-    if (!db) attachShared(firestoreAdapter(fs, fs.getFirestore(fbApp)));
+  client.auth.onAuthStateChange((event, session) => {
+    // Вызовы Supabase внутри этого обработчика могут зависнуть, поэтому подключаемся после него.
+    setTimeout(() => {
+      if (!session) {
+        setStatus('');
+        showAuth('Введите семейный PIN-код. На этом устройстве его нужно ввести только один раз.', { signIn: true });
+        return;
+      }
+      document.body.classList.remove('needs-login');
+      $('authPanel').hidden = true;
+      $('logoutBtn').hidden = false;
+      if (!db) attachShared(supabaseAdapter(client));
+    });
   });
 }
 
