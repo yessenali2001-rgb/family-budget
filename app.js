@@ -47,7 +47,7 @@ function normalizeReport(r) {
 
 function isValidTx(t) {
   return t && typeof t.id === 'string' && ['income', 'expense', 'transfer'].includes(t.type)
-    && (t.type !== 'transfer' || typeof t.to === 'string')
+    && (t.type !== 'transfer' || t.to === undefined || typeof t.to === 'string')
     && typeof t.amount === 'number' && t.amount > 0 && /^\d{4}-\d{2}-\d{2}$/.test(t.date)
     && typeof t.category === 'string' && typeof t.member === 'string';
 }
@@ -843,13 +843,20 @@ function renderFormSelects() {
   $('category').hidden = isTransfer;
   $('category').required = !isTransfer;
 
-  // На личном листе человек известен; для перевода нужно выбрать, кто и кому.
+  // На личном листе расход и доход — всегда этого человека. Для перевода «от кого» и «кому»
+  // выбирают сами; выбор не сбрасываем, чтобы на листе Мамы можно было записать «Папа → Мама».
   const who = isTransfer ? 'От кого: ' : '';
-  fillSelect($('member'), state.members.map((m) => [m, who + m]),
-    sheet !== 'all' && document.activeElement !== $('member') ? sheet : $('member').value);
+  const from = sheet !== 'all' && !isTransfer ? sheet : $('member').value;
+  fillSelect($('member'), state.members.map((m) => [m, who + m]), from);
   $('member').hidden = sheet !== 'all' && !isTransfer;
+
   const others = state.members.filter((m) => m !== $('member').value);
-  fillSelect($('toMember'), others.map((m) => [m, 'Кому: ' + m]), $('toMember').value);
+  let to = $('toMember').value;
+  if (!others.includes(to)) {
+    // по умолчанию: деньги пришли владельцу листа, иначе — первому, кто не «Общее»
+    to = sheet !== 'all' && others.includes(sheet) ? sheet : others.find((m) => m !== 'Общее') || others[0];
+  }
+  fillSelect($('toMember'), others.map((m) => [m, 'Кому: ' + m]), to);
   $('toMember').hidden = !isTransfer;
   $('toMember').required = isTransfer;
   fillSelect(
@@ -932,7 +939,7 @@ function renderTxList(monthTx) {
     });
     return el('li', {},
       el('div', { className: 'tx-main' },
-        el('div', { className: 'tx-title', textContent: isTransfer ? `Перевод: ${t.member} → ${t.to}` : t.category }),
+        el('div', { className: 'tx-title', textContent: isTransfer ? `Перевод: ${t.member} → ${t.to || '? (удалите и запишите заново)'}` : t.category }),
         el('div', { className: 'tx-meta', textContent: meta })),
       el('span', { className: 'tx-amount ' + cls, textContent: sign + fmt(t.amount) }),
       del
