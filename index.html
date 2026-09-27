@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Семейный бюджет</title>
-  <link rel="stylesheet" href="style.css?v=20260927-2">
+  <link rel="stylesheet" href="style.css?v=20260927-3">
 </head>
 <body>
   <header class="topbar">
@@ -62,7 +62,10 @@
           <label><input type="radio" name="type" value="transfer"> Перевод</label>
         </div>
         <input id="amount" type="number" min="0.01" step="0.01" placeholder="Сумма" required>
-        <select id="category" required></select>
+        <select id="category" required aria-label="Категория"></select>
+        <input id="otherInput" type="text" list="otherList" maxlength="40" autocomplete="off"
+          placeholder="Что именно? Например, ремонт телефона" aria-label="Что именно" hidden>
+        <datalist id="otherList"></datalist>
         <select id="member" required aria-label="Кто"></select>
         <select id="toMember" aria-label="Кому" hidden></select>
         <input id="date" type="date" required>
@@ -177,7 +180,7 @@
   </div>
   <div id="toast" class="toast" role="status" hidden></div>
 
-  <script src="config.js?v=20260927-2"></script>
-  <script src="app.js?v=20260927-2"></script>
+  <script src="config.js?v=20260927-3"></script>
+  <script src="app.js?v=20260927-3"></script>
 </body>
 </html>

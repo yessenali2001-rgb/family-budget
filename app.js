@@ -4,7 +4,13 @@ const CURRENCY = '₸'; // поменяйте на '₽', '$', '€' и т.д.
 
 const DEFAULT_STATE = {
   members: ['Общее'],
-  expenseCategories: ['Продукты', 'Жильё и ЖКХ', 'Транспорт', 'Дети', 'Здоровье', 'Одежда', 'Развлечения', 'Прочее'],
+  expenseCategories: [
+    'Продукты', 'Кафе и рестораны', 'Жильё и ЖКХ', 'Связь и интернет', 'Кредиты и рассрочки',
+    'Транспорт', 'Такси', 'Автомобиль', 'Дети', 'Образование и кружки', 'Здоровье и аптека',
+    'Красота и уход', 'Одежда и обувь', 'Бытовые товары', 'Техника', 'Подписки', 'Развлечения',
+    'Подарки', 'Тои и праздники', 'Помощь родителям', 'Путешествия', 'Питомцы', 'Прочее',
+  ],
+  categoriesVersion: 2, // при обновлении списка категорий новые добавляются к уже заведённым
   incomeCategories: ['Зарплата', 'Подработка', 'Подарки', 'Прочее'],
   limits: {},
   monthlyBudget: 0,
@@ -12,7 +18,8 @@ const DEFAULT_STATE = {
   reports: {}, // итоги месяцев: { '2026-09': { ai, aiAt, notes } }
 };
 
-const SETTINGS_KEYS = ['members', 'expenseCategories', 'incomeCategories', 'limits', 'monthlyBudget'];
+const SETTINGS_KEYS = ['members', 'expenseCategories', 'incomeCategories', 'limits', 'monthlyBudget', 'categoriesVersion'];
+const OTHER = 'Прочее';
 
 let state = load();
 let sheet = loadSheet(); // 'all' — вся семья, иначе имя члена семьи; у каждого своя вкладка
@@ -31,6 +38,8 @@ function normalize(data) {
     for (const [c, v] of Object.entries(data.limits)) if (v > 0) out.limits[c] = Number(v);
   }
   if (data?.monthlyBudget > 0) out.monthlyBudget = Number(data.monthlyBudget);
+  // старые данные (без номера версии) получили категории первой версии
+  out.categoriesVersion = Number(data?.categoriesVersion) || (Array.isArray(data?.expenseCategories) ? 1 : DEFAULT_STATE.categoriesVersion);
   if (Array.isArray(data?.transactions)) out.transactions = data.transactions.filter(isValidTx);
   if (data?.reports && typeof data.reports === 'object') {
     for (const [m, r] of Object.entries(data.reports)) {
@@ -49,7 +58,8 @@ function isValidTx(t) {
   return t && typeof t.id === 'string' && ['income', 'expense', 'transfer'].includes(t.type)
     && (t.type !== 'transfer' || t.to === undefined || typeof t.to === 'string')
     && typeof t.amount === 'number' && t.amount > 0 && /^\d{4}-\d{2}-\d{2}$/.test(t.date)
-    && typeof t.category === 'string' && typeof t.member === 'string';
+    && typeof t.category === 'string' && typeof t.member === 'string'
+    && (t.detail === undefined || typeof t.detail === 'string');
 }
 
 function load() {
@@ -127,6 +137,22 @@ function enqueue(path, write) {
   const run = () => write(db.doc(path)).catch(onWriteError);
   writeQueues[path] = (writeQueues[path] || Promise.resolve()).then(run);
   return writeQueues[path];
+}
+
+// Категории первой версии: если какой-то из них нет, её удалили сами — не возвращаем.
+const FIRST_CATEGORIES = ['Продукты', 'Жильё и ЖКХ', 'Транспорт', 'Дети', 'Здоровье', 'Одежда', 'Развлечения'];
+
+function upgradeCategories() {
+  if (state.categoriesVersion >= DEFAULT_STATE.categoriesVersion) return;
+  const current = state.expenseCategories.filter((c) => c !== OTHER);
+  // старые «Здоровье» и «Одежда» уже покрывают новые похожие категории
+  const similar = { 'Здоровье и аптека': 'Здоровье', 'Одежда и обувь': 'Одежда' };
+  const added = DEFAULT_STATE.expenseCategories
+    .filter((c) => c !== OTHER && !current.includes(c) && !current.includes(similar[c]) && !FIRST_CATEGORIES.includes(c));
+  setSettings({
+    expenseCategories: [...current, ...added, OTHER],
+    categoriesVersion: DEFAULT_STATE.categoriesVersion,
+  });
 }
 
 function applySettings(patch) {
@@ -252,6 +278,7 @@ function attachShared(shared, writable = true) {
   db.doc('budget/settings').onSnapshot((snap) => {
     settingsExist = snap.exists;
     Object.assign(state, settingsOf(normalize(snap.exists ? structuredClone(snap.data()) : {})));
+    if (snap.exists && canWrite) upgradeCategories();
     if (pendingSettings) applySettings(pendingSettings); // ещё не отправленный ввод
     if (!snap.metadata.fromCache) settingsLoaded = true;
     render();
@@ -346,6 +373,15 @@ function fillSelect(select, options, value) {
 }
 
 // ---------- Rendering ----------
+
+const txLabel = (t) => (t.detail ? `${t.category}: ${t.detail}` : t.category);
+
+// Из чего сложилось «Прочее»: [[пояснение, сумма], …] по убыванию суммы.
+function otherBreakdown(expenses) {
+  const other = expenses.filter((t) => t.category === OTHER);
+  return Object.entries(sumBy(other.map((t) => ({ ...t, detail: t.detail || 'без пояснения' })), 'detail'))
+    .sort((a, b) => b[1] - a[1]);
+}
 
 // Перевод между членами семьи касается и отправителя, и получателя.
 const involves = (t, m) => t.member === m || (t.type === 'transfer' && t.to === m);
@@ -665,11 +701,16 @@ function renderReport() {
     else if (before) change = `, ${v > before ? '+' : '−'}${fmt(Math.abs(v - before))} к прошлому месяцу`;
     facts.push(`${c}: ${fmt(v)} (${Math.round((v / cur.expense) * 100)}% расходов)${change}`);
   }
+  const otherParts = otherBreakdown(cur.expenses);
+  if (otherParts.length) {
+    const shown = otherParts.slice(0, 4).map(([d, v]) => `${d} ${fmt(v)}`).join(', ');
+    facts.push(`«Прочее» — это: ${shown}${otherParts.length > 4 ? ` и ещё ${otherParts.length - 4}` : ''}`);
+  }
   const over = Object.entries(state.limits).filter(([c, lim]) => (cur.byCat[c] || 0) > lim);
   if (over.length) facts.push('Превышен лимит: ' + over.map(([c, lim]) => `${c} (${fmt(cur.byCat[c])} из ${fmt(lim)})`).join(', '));
   const biggest = [...cur.expenses].sort((a, b) => b.amount - a.amount)[0];
   if (biggest) {
-    facts.push(`Самая крупная трата: ${fmt(biggest.amount)}, ${[biggest.category, biggest.member, shortDate(biggest.date), biggest.note].filter(Boolean).join(', ')}`);
+    facts.push(`Самая крупная трата: ${fmt(biggest.amount)}, ${[txLabel(biggest), biggest.member, shortDate(biggest.date), biggest.note].filter(Boolean).join(', ')}`);
   }
   const members = Object.entries(cur.byMember).sort((a, b) => b[1] - a[1]);
   if (members.length > 1) {
@@ -756,7 +797,8 @@ function buildPrompt(month) {
   const incomeByCat = Object.entries(sumBy(cur.txs.filter((t) => t.type === 'income'), 'category')).map(([c, v]) => `- ${c}: ${v}`);
   const members = Object.entries(cur.byMember).map(([m, v]) => `- ${m}: ${v}`);
   const top = [...cur.expenses].sort((a, b) => b.amount - a.amount).slice(0, 10)
-    .map((t) => `- ${t.date}, ${t.category}, ${t.member}, ${t.amount}${t.note ? `, «${t.note}»` : ''}`);
+    .map((t) => `- ${t.date}, ${txLabel(t)}, ${t.member}, ${t.amount}${t.note ? `, «${t.note}»` : ''}`);
+  const other = otherBreakdown(cur.expenses).map(([d, v]) => `- ${d}: ${v}`);
 
   return [
     'Ты помогаешь семье подвести итоги месяца по семейному бюджету.',
@@ -766,6 +808,7 @@ function buildPrompt(month) {
     `Прошлый месяц: доходы ${prev.income}, расходы ${prev.expense}.`,
     avg('expense') !== null ? `Средние расходы за предыдущие месяцы: ${avg('expense')}, средние доходы: ${avg('income')}.` : '',
     '', 'Расходы по категориям (этот месяц, в скобках прошлый месяц и лимит):', ...cats,
+    '', 'Из чего сложилась категория «Прочее»:', ...(other.length ? other : ['- нет']),
     '', 'Доходы по категориям:', ...(incomeByCat.length ? incomeByCat : ['- нет']),
     '', 'Расходы по членам семьи:', ...(members.length ? members : ['- нет']),
     '', 'Самые крупные траты:', ...(top.length ? top : ['- нет']),
@@ -778,6 +821,7 @@ function buildPrompt(month) {
     'Что получилось — 2–3 пункта.',
     'На что обратить внимание — 2–3 пункта.',
     'Советы на следующий месяц — 3 конкретных пункта с суммами.',
+    'Если в «Прочее» есть повторяющиеся или крупные траты, посоветуй завести для них отдельную категорию.',
     'Каждый пункт начинай с «• ». Опирайся только на эти данные и ничего не выдумывай. Не больше 220 слов.',
   ].filter((line) => line !== null).join('\n');
 }
@@ -842,6 +886,16 @@ function renderFormSelects() {
   fillSelect($('category'), cats.map((c) => [c, c]), $('category').value);
   $('category').hidden = isTransfer;
   $('category').required = !isTransfer;
+
+  // «Прочее» просим расшифровать: так итоги и анализ показывают, на что ушли деньги
+  const isOther = !isTransfer && $('category').value === OTHER;
+  $('otherInput').hidden = !isOther;
+  $('otherInput').required = isOther;
+  const used = [...new Set(state.transactions
+    .filter((t) => t.type === type && t.detail)
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .map((t) => t.detail))].slice(0, 30);
+  $('otherList').replaceChildren(...used.map((d) => el('option', { value: d })));
 
   // На личном листе расход и доход — всегда этого человека. Для перевода «от кого» и «кому»
   // выбирают сами; выбор не сбрасываем, чтобы на листе Мамы можно было записать «Папа → Мама».
@@ -939,7 +993,7 @@ function renderTxList(monthTx) {
     });
     return el('li', {},
       el('div', { className: 'tx-main' },
-        el('div', { className: 'tx-title', textContent: isTransfer ? `Перевод: ${t.member} → ${t.to || '? (удалите и запишите заново)'}` : t.category }),
+        el('div', { className: 'tx-title', textContent: isTransfer ? `Перевод: ${t.member} → ${t.to || '? (удалите и запишите заново)'}` : txLabel(t) }),
         el('div', { className: 'tx-meta', textContent: meta })),
       el('span', { className: 'tx-amount ' + cls, textContent: sign + fmt(t.amount) }),
       del
@@ -986,6 +1040,7 @@ $('nextMonth').addEventListener('click', () => { currentMonth = shiftMonth(curre
 
 document.querySelectorAll('input[name="type"]').forEach((r) => r.addEventListener('change', renderFormSelects));
 $('member').addEventListener('change', renderFormSelects);
+$('category').addEventListener('change', renderFormSelects);
 $('filterType').addEventListener('change', render);
 
 $('budgetInput').addEventListener('input', () => {
@@ -1005,6 +1060,7 @@ $('txForm').addEventListener('submit', (e) => {
     type,
     amount: Math.round(amount * 100) / 100,
     category: type === 'transfer' ? 'Перевод' : $('category').value,
+    ...(type !== 'transfer' && $('category').value === OTHER ? { detail: $('otherInput').value.trim() } : {}),
     member: $('member').value,
     date: $('date').value,
     note: $('note').value.trim(),
@@ -1017,6 +1073,7 @@ $('txForm').addEventListener('submit', (e) => {
   currentMonth = tx.date.slice(0, 7);
   $('amount').value = '';
   $('note').value = '';
+  $('otherInput').value = '';
   render();
   $('amount').focus();
 });
@@ -1131,6 +1188,7 @@ $('migrateBtn').addEventListener('click', async () => {
 });
 
 $('date').value = todayISO();
+upgradeCategories();
 render();
 connectShared();
 connectSample();
