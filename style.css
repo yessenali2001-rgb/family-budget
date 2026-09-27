@@ -105,6 +105,7 @@ h3 { font-size: .95rem; margin: 0 0 8px; color: var(--muted); font-weight: 600; 
 .ai-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 #notesInput { width: 100%; resize: vertical; font: inherit; }
 
+.needs-login #tabs, .needs-login main > :not(#authPanel) { display: none; }
 .read-only .editable, .read-only .del-btn, .read-only #budgetInput { display: none; }
 .month-nav { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 #monthLabel { min-width: 140px; text-align: center; text-transform: capitalize; }

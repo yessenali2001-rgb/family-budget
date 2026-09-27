@@ -114,6 +114,7 @@ function setStatus(text, kind = '') {
 function onWriteError(e) {
   const messages = {
     invalid_argument: 'Не удалось сохранить. Похоже, у вас доступ только на просмотр: попросите владельца дать права «Contributor».',
+    'permission-denied': 'Не удалось сохранить: у этого аккаунта нет доступа к семейному бюджету.',
     quota_exceeded: 'Общая база заполнена. Удалите старые операции, чтобы добавлять новые.',
     resource_exhausted: 'Слишком много изменений подряд. Подождите немного и повторите.',
   };
@@ -220,26 +221,32 @@ function renderMigration() {
   }
 }
 
-function onSubscribeError() {
+function onSubscribeError(e) {
+  if (e?.code === 'permission-denied') return showNoAccess();
   setStatus('Нет связи с общим бюджетом', 'bad');
 }
 
+// Общая база: Firebase (сайт на GitHub Pages) или хранилище claude.ai (артефакт).
 async function connectShared() {
+  if (window.FIREBASE_CONFIG) return connectFirebase();
   if (!window.claude?.use) return;
   const shared = await window.claude.use('db');
   if (!shared) return;
+  const user = await window.claude.use('user');
+  const writable = !user || (await user.can('data.write')) !== false;
+  attachShared(shared, writable);
+}
 
+function attachShared(shared, writable = true) {
   db = shared;
   localCopy = state;
   state = structuredClone(DEFAULT_STATE);
   setStatus('Подключаемся…');
-  render();
-
-  const user = await window.claude.use('user');
-  if (user && (await user.can('data.write')) === false) {
+  if (!writable) {
     canWrite = false;
     document.body.classList.add('read-only');
   }
+  render();
 
   db.doc('budget/settings').onSnapshot((snap) => {
     settingsExist = snap.exists;
@@ -413,6 +420,96 @@ function renderBudget(spent) {
       ...stats.map(([label, value, c]) => el('div', {},
         el('span', { textContent: label }), el('b', { className: c, textContent: value }))))
   );
+}
+
+// ---------- Firebase ----------
+// Настройки проекта лежат в firebase-config.js. Вход через Google; кого пускать,
+// решают правила Firestore (firestore.rules), а не страница.
+
+const FIREBASE_SDK = 'https://www.gstatic.com/firebasejs/11.10.0/';
+
+// Переходник: Firestore с тем же набором вызовов, что и у общей базы claude.ai.
+function firestoreAdapter(fs, store) {
+  const wrap = (snap) => ({ id: snap.id, exists: snap.exists(), data: () => snap.data(), metadata: snap.metadata });
+  return {
+    doc(path) {
+      const ref = fs.doc(store, path);
+      return {
+        set: (data) => fs.setDoc(ref, data),
+        // merge: вложенные объекты сливаются, как update в claude.ai, и документ создаётся при отсутствии
+        update: (data) => fs.setDoc(ref, data, { merge: true }),
+        delete: () => fs.deleteDoc(ref),
+        onSnapshot: (next, error) => fs.onSnapshot(ref, (snap) => next(wrap(snap)), error),
+      };
+    },
+    collection(path) {
+      const ref = fs.collection(store, path);
+      return {
+        onSnapshot: (next, error) => fs.onSnapshot(ref, (qs) => next({
+          docs: qs.docs.map(wrap), size: qs.size, empty: qs.empty, metadata: qs.metadata,
+        }), error),
+      };
+    },
+  };
+}
+
+let firebaseAuth = null;
+
+function showAuth(text, { signIn = false, signOut = false } = {}) {
+  $('authPanel').hidden = false;
+  $('authText').textContent = text;
+  $('signInBtn').hidden = !signIn;
+  $('signOutBtn').hidden = !signOut;
+}
+
+function showNoAccess() {
+  const email = firebaseAuth?.currentUser?.email || 'этого аккаунта';
+  document.body.classList.add('needs-login');
+  setStatus('Нет доступа', 'bad');
+  showAuth(`У ${email} нет доступа к семейному бюджету. Попросите владельца добавить этот email в список семьи или войдите другим аккаунтом.`, { signOut: true });
+}
+
+async function connectFirebase() {
+  let firebase;
+  try {
+    const [app, auth, fs] = await Promise.all(['firebase-app.js', 'firebase-auth.js', 'firebase-firestore.js']
+      .map((f) => import(FIREBASE_SDK + f)));
+    firebase = { app, auth, fs };
+  } catch {
+    setStatus('Общая база недоступна, данные сохраняются только здесь', 'bad');
+    return;
+  }
+  const { app, auth, fs } = firebase;
+  const fbApp = app.initializeApp(window.FIREBASE_CONFIG);
+  firebaseAuth = auth.getAuth(fbApp);
+  const provider = new auth.GoogleAuthProvider();
+
+  $('signInBtn').onclick = async () => {
+    try {
+      await auth.signInWithPopup(firebaseAuth, provider);
+    } catch (e) {
+      if (['auth/popup-blocked', 'auth/operation-not-supported-in-this-environment'].includes(e?.code)) {
+        auth.signInWithRedirect(firebaseAuth, provider);
+      } else if (!['auth/popup-closed-by-user', 'auth/cancelled-popup-request'].includes(e?.code)) {
+        notify('Не удалось войти. Попробуйте ещё раз.');
+      }
+    }
+  };
+  $('signOutBtn').onclick = $('logoutBtn').onclick = () => auth.signOut(firebaseAuth).then(() => location.reload());
+
+  document.body.classList.add('needs-login');
+  auth.onAuthStateChanged(firebaseAuth, (user) => {
+    if (!user) {
+      setStatus('');
+      showAuth('Войдите через Google, чтобы открыть общий бюджет семьи.', { signIn: true });
+      return;
+    }
+    document.body.classList.remove('needs-login');
+    $('authPanel').hidden = true;
+    $('logoutBtn').hidden = false;
+    $('logoutBtn').textContent = `Выйти (${user.email})`;
+    if (!db) attachShared(firestoreAdapter(fs, fs.getFirestore(fbApp)));
+  });
 }
 
 // ---------- Итоги месяца ----------

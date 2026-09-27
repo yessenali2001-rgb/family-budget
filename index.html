@@ -20,6 +20,12 @@
   <nav id="tabs" class="tabs" aria-label="Листы"></nav>
 
   <main>
+    <section id="authPanel" class="panel banner" hidden>
+      <p id="authText"></p>
+      <button id="signInBtn" class="primary">Войти через Google</button>
+      <button id="signOutBtn" hidden>Выйти</button>
+    </section>
+
     <section id="reportReminder" class="panel banner" hidden>
       <p id="reminderText"></p>
       <button id="reminderBtn" class="primary">Открыть итоги</button>
@@ -146,6 +152,7 @@
         <button id="importBtn">Импорт</button>
         <input id="importInput" type="file" accept="application/json,.json" hidden>
         <button id="resetBtn" class="danger">Удалить все данные</button>
+        <button id="logoutBtn" hidden>Выйти</button>
       </div>
     </section>
   </main>
@@ -163,6 +170,7 @@
   </div>
   <div id="toast" class="toast" role="status" hidden></div>
 
+  <script src="firebase-config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

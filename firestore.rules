@@ -1,0 +1,20 @@
+rules_version = '2';
+
+// Доступ к бюджету есть только у членов семьи из списка ниже.
+// Вставьте эти правила в Firebase Console → Firestore Database → Rules и нажмите Publish.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isFamily() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in [
+          'your.email@gmail.com',
+          'family.member@gmail.com'
+        ];
+    }
+
+    match /{document=**} {
+      allow read, write: if isFamily();
+    }
+  }
+}
