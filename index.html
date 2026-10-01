@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Семейный бюджет</title>
-  <link rel="stylesheet" href="style.css?v=20261001-1">
+  <link rel="stylesheet" href="style.css?v=20261001-2">
 </head>
 <body>
   <header class="topbar">
@@ -52,6 +52,9 @@
         <input id="budgetInput" type="number" min="0" step="1000" placeholder="Сумма бюджета" aria-label="Общий бюджет на месяц">
       </div>
       <div id="budgetBody"></div>
+      <label class="carry-from">Переносить остаток бюджета с
+        <select id="carryFrom" aria-label="С какого месяца переносить остаток бюджета"></select>
+      </label>
     </section>
 
     <section class="panel editable">
@@ -181,7 +184,7 @@
   </div>
   <div id="toast" class="toast" role="status" hidden></div>
 
-  <script src="config.js?v=20261001-1"></script>
-  <script src="app.js?v=20261001-1"></script>
+  <script src="config.js?v=20261001-2"></script>
+  <script src="app.js?v=20261001-2"></script>
 </body>
 </html>

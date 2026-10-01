@@ -169,6 +169,8 @@ button.danger { color: var(--expense); }
 .panel-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .panel-head h2 { margin: 0; }
 #budgetInput { width: 170px; }
+.carry-from { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; color: var(--muted); font-size: .85rem; }
+.carry-from select { padding: 4px 8px; font-size: .85rem; }
 .budget-track { height: 14px; margin: 4px 0 12px; }
 .budget-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px 16px; }
 .budget-stats div { display: grid; }

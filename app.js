@@ -13,12 +13,14 @@ const DEFAULT_STATE = {
   categoriesVersion: 2, // при обновлении списка категорий новые добавляются к уже заведённым
   incomeCategories: ['Зарплата', 'Подработка', 'Подарки', 'Прочее'],
   limits: {},
-  monthlyBudget: 0,
+  monthlyBudget: 0, // бюджет для месяцев, у которых нет своей суммы в budgets
+  budgets: {}, // { '2026-10': 250000 } — сумма действует с этого месяца и дальше
+  carryFrom: '', // с какого месяца переносить остаток бюджета: '' — сам решает, 'none' — не переносить
   transactions: [],
   reports: {}, // итоги месяцев: { '2026-09': { ai, aiAt, notes } }
 };
 
-const SETTINGS_KEYS = ['members', 'expenseCategories', 'incomeCategories', 'limits', 'monthlyBudget', 'categoriesVersion'];
+const SETTINGS_KEYS = ['members', 'expenseCategories', 'incomeCategories', 'limits', 'monthlyBudget', 'budgets', 'carryFrom', 'categoriesVersion'];
 const OTHER = 'Прочее';
 
 let state = load();
@@ -38,6 +40,10 @@ function normalize(data) {
     for (const [c, v] of Object.entries(data.limits)) if (v > 0) out.limits[c] = Number(v);
   }
   if (data?.monthlyBudget > 0) out.monthlyBudget = Number(data.monthlyBudget);
+  if (data?.budgets && typeof data.budgets === 'object') {
+    for (const [m, v] of Object.entries(data.budgets)) if (/^\d{4}-\d{2}$/.test(m) && v >= 0) out.budgets[m] = Number(v);
+  }
+  if (data?.carryFrom === 'none' || /^\d{4}-\d{2}$/.test(data?.carryFrom)) out.carryFrom = data.carryFrom;
   // старые данные (без номера версии) получили категории первой версии
   out.categoriesVersion = Number(data?.categoriesVersion) || (Array.isArray(data?.expenseCategories) ? 1 : DEFAULT_STATE.categoriesVersion);
   if (Array.isArray(data?.transactions)) out.transactions = data.transactions.filter(isValidTx);
@@ -157,6 +163,7 @@ function upgradeCategories() {
 
 function applySettings(patch) {
   for (const [k, v] of Object.entries(patch)) {
+    if (k === 'budgets') { state.budgets = { ...state.budgets, ...v }; continue; }
     if (k !== 'limits') { state[k] = v; continue; }
     for (const [c, x] of Object.entries(v)) {
       if (x > 0) state.limits[c] = x;
@@ -171,7 +178,9 @@ function setSettings(patch, delay = 0) {
   applySettings(patch);
   if (!db) return saveLocal();
   const merged = { ...pendingSettings, ...patch };
-  if (pendingSettings?.limits && patch.limits) merged.limits = { ...pendingSettings.limits, ...patch.limits };
+  for (const key of ['limits', 'budgets']) {
+    if (pendingSettings?.[key] && patch[key]) merged[key] = { ...pendingSettings[key], ...patch[key] };
+  }
   pendingSettings = merged;
   clearTimeout(settingsTimer);
   settingsTimer = setTimeout(flushSettings, delay);
@@ -235,7 +244,7 @@ async function replaceAll(data) {
 }
 
 function hasLocalData(s) {
-  return s && (s.transactions.length > 0 || s.members.length > 1 || s.monthlyBudget > 0);
+  return s && (s.transactions.length > 0 || s.members.length > 1 || s.monthlyBudget > 0 || Object.keys(s.budgets).length > 0);
 }
 
 function renderMigration() {
@@ -453,12 +462,64 @@ function render({ settings = true } = {}) {
   renderMigration();
 }
 
-function renderBudget(spent) {
-  const budget = state.monthlyBudget;
-  const input = $('budgetInput');
-  if (document.activeElement !== input) input.value = budget || '';
+// ---------- Бюджет с переносом остатка ----------
 
-  if (!(budget > 0)) {
+// Бюджет месяца: последняя сумма, заданная в этом месяце или раньше.
+function budgetFor(month) {
+  const keys = Object.keys(state.budgets).filter((k) => k <= month).sort();
+  return keys.length ? state.budgets[keys[keys.length - 1]] : state.monthlyBudget;
+}
+
+const familyExpense = (month) => state.transactions
+  .filter((t) => t.type === 'expense' && t.date.startsWith(month))
+  .reduce((s, t) => s + t.amount, 0);
+
+const firstMonth = () => state.transactions.reduce((min, t) => (t.date < min ? t.date : min), '9999').slice(0, 7);
+
+// С какого месяца переносим. Сами решаем так: первый месяц с записями, но если записи в нём
+// начались позже 7-го числа, месяц неполный и его «неистраченный» бюджет не настоящий — берём следующий.
+function carryStart() {
+  if (state.carryFrom) return state.carryFrom;
+  const first = state.transactions.reduce((min, t) => (t.date < min ? t.date : min), '9999-99-99');
+  if (first.startsWith('9999')) return 'none';
+  return Number(first.slice(8, 10)) > 7 ? shiftMonth(first.slice(0, 7), 1) : first.slice(0, 7);
+}
+
+// Сколько бюджета перешло в этот месяц: неистраченное (или перерасход) всех прошлых месяцев.
+function budgetCarry(month) {
+  const start = carryStart();
+  if (start === 'none') return 0;
+  let carry = 0;
+  for (let m = start; m < month; m = shiftMonth(m, 1)) {
+    const budget = budgetFor(m);
+    if (budget > 0) carry += budget - familyExpense(m);
+  }
+  return carry;
+}
+
+function renderCarryFrom() {
+  const select = $('carryFrom');
+  if (document.activeElement === select) return;
+  const first = firstMonth();
+  const now = monthKey(new Date());
+  const months = [];
+  if (!first.startsWith('9999')) for (let m = first; m <= now; m = shiftMonth(m, 1)) months.push(m);
+  const start = carryStart();
+  if (start !== 'none' && !months.includes(start)) months.push(start);
+  fillSelect(select, [['none', 'не переносить'], ...months.map((m) => [m, monthName(m)])], start);
+  select.disabled = !canWrite;
+}
+
+function renderBudget(spent) {
+  const base = budgetFor(currentMonth);
+  const carry = base > 0 ? budgetCarry(currentMonth) : 0;
+  const budget = base + carry;
+  const input = $('budgetInput');
+  if (document.activeElement !== input) input.value = base || '';
+  renderCarryFrom();
+  $('carryFrom').parentElement.hidden = !(base > 0);
+
+  if (!(base > 0)) {
     $('budgetBody').replaceChildren(el('p', {
       className: 'muted',
       textContent: 'Укажите, сколько семья планирует потратить за месяц, — здесь появится остаток.',
@@ -467,10 +528,13 @@ function renderBudget(spent) {
   }
 
   const left = budget - spent;
-  const ratio = spent / budget;
+  const ratio = budget > 0 ? spent / budget : (spent > 0 ? 2 : 0);
   const cls = ratio > 1 ? 'over' : ratio >= 0.8 ? 'near' : '';
+  const sign = carry > 0 ? '+' : '−';
   const stats = [
-    ['Потрачено', `${fmt(spent)} (${Math.round(ratio * 100)}%)`, ''],
+    ...(carry ? [['Доступно в этом месяце', `${fmt(budget)} (${fmt(base)} ${sign} ${fmt(Math.abs(carry))} с прошлых месяцев)`,
+      budget >= 0 ? '' : 'expense']] : []),
+    ['Потрачено', budget > 0 ? `${fmt(spent)} (${Math.round(ratio * 100)}%)` : fmt(spent), ''],
     [left >= 0 ? 'Осталось' : 'Перерасход', fmt(Math.abs(left)), left >= 0 ? 'income' : 'expense'],
   ];
 
@@ -706,8 +770,8 @@ function renderReport() {
       : stat('Расходы к прошлому месяцу', '—', 'за прошлый месяц нет данных'),
     stat('В среднем в день', fmt(Math.round(cur.expense / daysCounted(currentMonth))), `дней: ${daysCounted(currentMonth)}`),
   ];
-  if (state.monthlyBudget > 0) {
-    const left = state.monthlyBudget - cur.expense;
+  if (budgetFor(currentMonth) > 0) {
+    const left = budgetFor(currentMonth) + budgetCarry(currentMonth) - cur.expense;
     tiles.push(stat('Общий бюджет', left >= 0 ? 'Уложились' : 'Превышен',
       left >= 0 ? `осталось ${fmt(left)}` : `на ${fmt(-left)}`, left >= 0 ? 'income' : 'expense'));
   }
@@ -831,7 +895,10 @@ function buildPrompt(month) {
     `Доходы: ${cur.income}. Расходы: ${cur.expense}. Баланс месяца: ${cur.income - cur.expense}.`,
     `Остаток с прошлых месяцев: ${netBalance(state.transactions.filter((t) => t.date < month + '-01'))}. `
       + `Остаток денег на конец месяца: ${netBalance(state.transactions.filter((t) => t.date < shiftMonth(month, 1) + '-01'))}.`,
-    state.monthlyBudget ? `Плановый бюджет расходов на месяц: ${state.monthlyBudget}.` : 'Плановый бюджет не задан.',
+    budgetFor(month)
+      ? `Плановый бюджет расходов на месяц: ${budgetFor(month)}, перенос остатка бюджета с прошлых месяцев: ${budgetCarry(month)}, `
+        + `всего доступно: ${budgetFor(month) + budgetCarry(month)}.`
+      : 'Плановый бюджет не задан.',
     `Прошлый месяц: доходы ${prev.income}, расходы ${prev.expense}.`,
     avg('expense') !== null ? `Средние расходы за предыдущие месяцы: ${avg('expense')}, средние доходы: ${avg('income')}.` : '',
     '', 'Расходы по категориям (этот месяц, в скобках прошлый месяц и лимит):', ...cats,
@@ -1070,9 +1137,15 @@ $('member').addEventListener('change', renderFormSelects);
 $('category').addEventListener('change', renderFormSelects);
 $('filterType').addEventListener('change', render);
 
+$('carryFrom').addEventListener('change', () => {
+  setSettings({ carryFrom: $('carryFrom').value });
+  render({ settings: false });
+});
+
 $('budgetInput').addEventListener('input', () => {
   const v = parseFloat($('budgetInput').value);
-  setSettings({ monthlyBudget: v > 0 ? v : 0 }, 800);
+  // новая сумма действует с открытого месяца и дальше; прошлые месяцы и их перенос не меняются
+  setSettings({ budgets: { [currentMonth]: v > 0 ? v : 0 } }, 800);
   render({ settings: false });
 });
 $('filterMember').addEventListener('change', render);
