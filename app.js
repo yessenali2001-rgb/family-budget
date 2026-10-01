@@ -386,6 +386,21 @@ function otherBreakdown(expenses) {
 // Перевод между членами семьи касается и отправителя, и получателя.
 const involves = (t, m) => t.member === m || (t.type === 'transfer' && t.to === m);
 
+// Сколько денег прибавилось (или убыло) по операциям: у всей семьи (member = null)
+// или у одного человека — тогда считаются и переводы ему и от него.
+function netBalance(txs, member = null) {
+  let sum = 0;
+  for (const t of txs) {
+    if (t.type === 'transfer') {
+      if (member && t.to === member) sum += t.amount;
+      if (member && t.member === member) sum -= t.amount;
+    } else if (!member || t.member === member) {
+      sum += t.type === 'income' ? t.amount : -t.amount;
+    }
+  }
+  return sum;
+}
+
 function render({ settings = true } = {}) {
   const [y, m] = currentMonth.split('-').map(Number);
   $('monthLabel').textContent = new Date(y, m - 1, 1).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
@@ -407,6 +422,13 @@ function render({ settings = true } = {}) {
   const transferParts = [received && `получено ${fmt(received)}`, sent && `отдано ${fmt(sent)}`].filter(Boolean);
   $('transferNote').hidden = !transferParts.length;
   $('transferNote').textContent = 'с учётом переводов: ' + transferParts.join(', ');
+
+  // Остаток переходит из месяца в месяц: всё, что осталось до начала этого месяца, плюс баланс месяца
+  const carried = netBalance(state.transactions.filter((t) => t.date < currentMonth + '-01'), onMemberSheet ? sheet : null);
+  const total = carried + balance;
+  $('carryTotal').textContent = fmt(total);
+  $('carryTotal').className = 'card-value ' + (total >= 0 ? 'income' : 'expense');
+  $('carryNote').textContent = `с прошлых месяцев: ${carried > 0 ? '+' : carried < 0 ? '−' : ''}${fmt(Math.abs(carried))}`;
 
   $('totalIncome').textContent = fmt(income);
   $('totalExpense').textContent = fmt(expense);
@@ -760,7 +782,10 @@ function renderReminder() {
   const show = canWrite && now.getDate() <= 10 && currentMonth !== prev && (!db || settingsLoaded)
     && state.transactions.some((t) => t.date.startsWith(prev)) && !report.notes && !report.ai;
   $('reportReminder').hidden = !show;
-  if (show) $('reminderText').textContent = `${monthName(prev, { month: 'long' })} закончился. Подведите итоги месяца всей семьёй.`;
+  if (show) {
+    const name = monthName(prev, { month: 'long' });
+    $('reminderText').textContent = `${name[0].toUpperCase() + name.slice(1)} закончился. Подведите итоги месяца всей семьёй.`;
+  }
 }
 
 // ---------- Анализ Claude ----------
@@ -803,7 +828,9 @@ function buildPrompt(month) {
   return [
     'Ты помогаешь семье подвести итоги месяца по семейному бюджету.',
     `Месяц: ${monthName(month)}. Валюта: ${CURRENCY}. Учтено дней: ${daysCounted(month)}.`,
-    `Доходы: ${cur.income}. Расходы: ${cur.expense}. Остаток: ${cur.income - cur.expense}.`,
+    `Доходы: ${cur.income}. Расходы: ${cur.expense}. Баланс месяца: ${cur.income - cur.expense}.`,
+    `Остаток с прошлых месяцев: ${netBalance(state.transactions.filter((t) => t.date < month + '-01'))}. `
+      + `Остаток денег на конец месяца: ${netBalance(state.transactions.filter((t) => t.date < shiftMonth(month, 1) + '-01'))}.`,
     state.monthlyBudget ? `Плановый бюджет расходов на месяц: ${state.monthlyBudget}.` : 'Плановый бюджет не задан.',
     `Прошлый месяц: доходы ${prev.income}, расходы ${prev.expense}.`,
     avg('expense') !== null ? `Средние расходы за предыдущие месяцы: ${avg('expense')}, средние доходы: ${avg('income')}.` : '',
